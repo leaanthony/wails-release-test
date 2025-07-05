@@ -1,0 +1,282 @@
+name: Safe Nightly Releases (TESTING ONLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (no actual releases)'
+        required: false
+        default: true
+        type: boolean
+      test_v2_only:
+        description: 'Test v2 release only'
+        required: false
+        default: false
+        type: boolean
+      test_v3_only:
+        description: 'Test v3-alpha release only'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  GO_VERSION: '1.24'
+
+jobs:
+  check-permissions:
+    name: Check Release Permissions
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Check if user is authorized
+        id: check
+        run: |
+          # SAFE: Only allow specific test users for fork testing
+          AUTHORIZED_USERS="leaanthony"
+          
+          if [[ "$AUTHORIZED_USERS" == *"${{ github.actor }}"* ]]; then
+            echo "✅ User ${{ github.actor }} is authorized for testing"
+            echo "authorized=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ User ${{ github.actor }} is not authorized for testing"
+            echo "authorized=false" >> $GITHUB_OUTPUT
+          fi
+
+  test-v2-release:
+    name: Test v2 Release Process
+    runs-on: ubuntu-latest
+    needs: check-permissions
+    if: |
+      needs.check-permissions.outputs.authorized == 'true' &&
+      (github.event.inputs.test_v2_only == 'true' || github.event.inputs.test_v3_only != 'true')
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.content }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Test v2 changelog extraction
+        id: changelog
+        run: |
+          echo "🔍 Testing v2 changelog extraction..."
+          CHANGELOG_FILE="website/src/pages/changelog.mdx"
+          
+          if [ ! -f "$CHANGELOG_FILE" ]; then
+            echo "❌ v2 changelog file not found"
+            exit 1
+          fi
+          
+          # Extract unreleased section for release notes
+          awk '
+          /^## \[Unreleased\]/ { found=1; next }
+          found && /^## / { exit }
+          found && !/^$/ { print }
+          ' $CHANGELOG_FILE > v2_release_notes.md
+          
+          echo "📝 v2 changelog content extracted:"
+          cat v2_release_notes.md
+          echo "Lines extracted: $(wc -l < v2_release_notes.md)"
+          
+          # SAFE: Log content instead of using it
+          echo "content=v2-changelog-extracted" >> $GITHUB_OUTPUT
+
+      - name: Test version detection and increment
+        id: version
+        run: |
+          echo "🔍 Testing v2 version detection..."
+          
+          if [ ! -f "v2/cmd/wails/internal/version.txt" ]; then
+            echo "❌ v2 version file not found"
+            exit 1
+          fi
+          
+          CURRENT_VERSION=$(cat v2/cmd/wails/internal/version.txt | sed 's/^v//')
+          echo "Current v2 version: v$CURRENT_VERSION"
+          
+          # Analyze recent commits for release type
+          RECENT_COMMITS=$(git log --oneline --since="24 hours ago" --grep="^feat\|^fix\|^BREAKING")
+          echo "Recent conventional commits:"
+          echo "$RECENT_COMMITS"
+          
+          # Determine release type
+          RELEASE_TYPE="patch"
+          if echo "$RECENT_COMMITS" | grep -q "feat!\|fix!\|BREAKING CHANGE:"; then
+            RELEASE_TYPE="major"
+          elif echo "$RECENT_COMMITS" | grep -q "feat\|BREAKING CHANGE"; then
+            RELEASE_TYPE="minor"
+          fi
+          
+          echo "Detected release type: $RELEASE_TYPE"
+          
+          # Calculate next version
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR=${VERSION_PARTS[0]}
+          MINOR=${VERSION_PARTS[1]}
+          PATCH=${VERSION_PARTS[2]}
+          
+          case $RELEASE_TYPE in
+            "major")
+              NEW_VERSION="v$((MAJOR + 1)).0.0"
+              ;;
+            "minor")
+              NEW_VERSION="v$MAJOR.$((MINOR + 1)).0"
+              ;;
+            *)
+              NEW_VERSION="v$MAJOR.$MINOR.$((PATCH + 1))"
+              ;;
+          esac
+          
+          echo "Next version would be: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: SAFE TEST - Log what would be created
+        run: |
+          echo "🧪 SAFE TEST MODE - Would create the following:"
+          echo "Repository: ${{ github.repository }}"
+          echo "Tag: ${{ steps.version.outputs.version }}"
+          echo "Release notes file: v2_release_notes.md"
+          echo "Build command would be: cd v2 && go run tools/release/release.go"
+          echo ""
+          echo "⚠️  NO ACTUAL RELEASES CREATED - TESTING ONLY"
+
+  test-v3-release:
+    name: Test v3-alpha Release Process
+    runs-on: ubuntu-latest
+    needs: check-permissions
+    if: |
+      needs.check-permissions.outputs.authorized == 'true' &&
+      (github.event.inputs.test_v3_only == 'true' || github.event.inputs.test_v2_only != 'true')
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog: ${{ steps.changelog.outputs.content }}
+    steps:
+      - name: Checkout v3-alpha branch
+        uses: actions/checkout@v4
+        with:
+          ref: v3-alpha
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Test v3 changelog extraction
+        id: changelog
+        run: |
+          echo "🔍 Testing v3 changelog extraction..."
+          CHANGELOG_FILE="docs/src/content/docs/changelog.mdx"
+          
+          if [ ! -f "$CHANGELOG_FILE" ]; then
+            echo "❌ v3 changelog file not found: $CHANGELOG_FILE"
+            echo "Current directory: $(pwd)"
+            echo "Files in docs/src/content/docs/:"
+            ls -la docs/src/content/docs/ || echo "Directory not found"
+            exit 1
+          fi
+          
+          # Extract unreleased section for release notes
+          awk '
+          /^## \[Unreleased\]/ { found=1; next }
+          found && /^## / { exit }
+          found && !/^$/ { print }
+          ' $CHANGELOG_FILE > v3_release_notes.md
+          
+          echo "📝 v3 changelog content extracted:"
+          cat v3_release_notes.md
+          echo "Lines extracted: $(wc -l < v3_release_notes.md)"
+          
+          # SAFE: Log content instead of using it
+          echo "content=v3-changelog-extracted" >> $GITHUB_OUTPUT
+
+      - name: Test v3 version detection and increment
+        id: version
+        run: |
+          echo "🔍 Testing v3 version detection..."
+          
+          # Find current v3 version from git tags
+          CURRENT_TAG=$(git describe --tags --match "v3.*-alpha.*" --abbrev=0 2>/dev/null || echo "v3.0.0-alpha.0")
+          echo "Current v3 tag: $CURRENT_TAG"
+          
+          # Extract alpha number
+          if [[ $CURRENT_TAG =~ v3\.0\.0-alpha\.([0-9]+) ]]; then
+            ALPHA_NUM=${BASH_REMATCH[1]}
+            NEW_ALPHA_NUM=$((ALPHA_NUM + 1))
+            NEW_VERSION="v3.0.0-alpha.$NEW_ALPHA_NUM"
+          else
+            echo "Could not parse version, defaulting to alpha.1"
+            NEW_VERSION="v3.0.0-alpha.1"
+          fi
+          
+          echo "Next v3 version would be: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: SAFE TEST - Log what would be created
+        run: |
+          echo "🧪 SAFE TEST MODE - Would create the following:"
+          echo "Repository: ${{ github.repository }}"
+          echo "Tag: ${{ steps.version.outputs.version }}"
+          echo "Release notes file: v3_release_notes.md"
+          echo "Build command would be: go run tasks/release/release.go"
+          echo ""
+          echo "⚠️  NO ACTUAL RELEASES CREATED - TESTING ONLY"
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [check-permissions, test-v2-release, test-v3-release]
+    if: always()
+    steps:
+      - name: Create test summary
+        run: |
+          echo "# 🧪 Safe Nightly Release Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository**: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.check-permissions.result }}" == "success" ]; then
+            echo "✅ **Permissions**: Authorized" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Permissions**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.test-v2-release.result }}" == "success" ]; then
+            echo "✅ **v2 Release Test**: Passed" >> $GITHUB_STEP_SUMMARY
+            echo "  - Version: ${{ needs.test-v2-release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "  - Changelog: ${{ needs.test-v2-release.outputs.changelog }}" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.test-v2-release.result }}" == "skipped" ]; then
+            echo "⏭️ **v2 Release Test**: Skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **v2 Release Test**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.test-v3-release.result }}" == "success" ]; then
+            echo "✅ **v3 Release Test**: Passed" >> $GITHUB_STEP_SUMMARY
+            echo "  - Version: ${{ needs.test-v3-release.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "  - Changelog: ${{ needs.test-v3-release.outputs.changelog }}" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.test-v3-release.result }}" == "skipped" ]; then
+            echo "⏭️ **v3 Release Test**: Skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **v3 Release Test**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**⚠️ SAFE TESTING MODE**" >> $GITHUB_STEP_SUMMARY
+          echo "- No actual releases were created" >> $GITHUB_STEP_SUMMARY
+          echo "- No tags were pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- No files were deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- This workflow only tests the release logic" >> $GITHUB_STEP_SUMMARY
