@@ -201,13 +201,16 @@ jobs:
           
           # Commit the changelog changes
           git add website/src/pages/changelog.mdx v2/cmd/wails/internal/version.txt
-          git commit -m "chore: release $VERSION
+          git commit -m "$(cat <<'EOF'
+          chore: release $VERSION
 
           Automated release created by GitHub Actions
 
           🤖 Generated with [Claude Code](https://claude.ai/code)
 
-          Co-Authored-By: Claude <noreply@anthropic.com>"
+          Co-Authored-By: Claude <noreply@anthropic.com>
+          EOF
+          )"
           
           # Create and push tag
           git tag -a "$VERSION" -m "Release $VERSION"
@@ -294,13 +297,16 @@ jobs:
           
           # Commit the changelog changes
           git add docs/src/content/docs/changelog.mdx v3/internal/version/version.txt
-          git commit -m "chore: release $VERSION
+          git commit -m "$(cat <<'EOF'
+          chore: release $VERSION
 
           Automated v3-alpha release created by GitHub Actions
 
           🤖 Generated with [Claude Code](https://claude.ai/code)
 
-          Co-Authored-By: Claude <noreply@anthropic.com>"
+          Co-Authored-By: Claude <noreply@anthropic.com>
+          EOF
+          )"
           
           # Create and push tag
           git tag -a "$VERSION" -m "Release $VERSION"
